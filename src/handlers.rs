@@ -87,6 +87,10 @@ async fn list_keys(
         },
         None => FormatEnum::Text,
     };
+    let content_type = match format {
+        FormatEnum::Text => "plain/text",
+        FormatEnum::Json => "application/json",
+    };
     let limit = query
         .limit
         .unwrap_or_else(|| st_map.map.lock().unwrap().len());
@@ -98,15 +102,17 @@ async fn list_keys(
     let _reverse = query.reverse.unwrap_or(false);
     let values = query.values.unwrap_or(false);
     let key_lists = st_map.map.lock().unwrap();
-    HttpResponse::Ok().body(format_map(
-        format,
-        values,
-        key_lists
-            .iter()
-            .filter(|(k, _)| k.starts_with(prefix))
-            .skip(skip)
-            .take(limit),
-    ))
+    HttpResponse::Ok()
+        .content_type(content_type)
+        .body(format_map(
+            format,
+            values,
+            key_lists
+                .iter()
+                .filter(|(k, _)| k.starts_with(prefix))
+                .skip(skip)
+                .take(limit),
+        ))
 }
 
 #[get("/{key}")]
