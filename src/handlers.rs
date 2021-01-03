@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use actix_web::{delete, get, patch, post, web, HttpRequest, HttpResponse, Responder};
 use serde::Deserialize;
@@ -9,6 +10,7 @@ use crate::TTL_DEFAULT;
 struct MapValue {
     value: serde_json::Value,
     ttl: u64,
+    timestamp: Instant,
 }
 
 pub struct Map {
@@ -34,7 +36,7 @@ enum FormatEnum {
 }
 
 #[derive(Deserialize)]
-struct ListOptions {
+struct ListOpts {
     format: Option<String>,
     limit: Option<usize>,
     skip: Option<usize>,
@@ -66,7 +68,7 @@ where
             let key_val_list: Vec<String> = if values {
                 st_map.map(|(k, v)| format!("{}={}", k, v.value)).collect()
             } else {
-                st_map.map(|(k, _)| format!("{}", k)).collect()
+                st_map.map(|(k, _)| k.to_string()).collect()
             };
             key_val_list.join("\n")
         }
@@ -76,7 +78,7 @@ where
 #[get("/")]
 async fn list_keys(
     _req: HttpRequest,
-    query: web::Query<ListOptions>,
+    query: web::Query<ListOpts>,
     st_map: web::Data<Map>,
 ) -> impl Responder {
     let format = match &query.format {
@@ -119,13 +121,11 @@ async fn list_keys(
 async fn get_val(web::Path(key): web::Path<String>, st_map: web::Data<Map>) -> impl Responder {
     let lock = st_map.map.lock().unwrap();
     HttpResponse::Ok().body(match lock.get(&key) {
-        Some(val) => format!(
-            "Found value {} {} for key {} with ttl {}",
-            val.value.as_u64().unwrap_or(2),
-            val.value,
-            key,
-            val.ttl
-        ),
+        Some(val) => if val.timestamp.elapsed() < Duration::from_secs(val.ttl) {
+            format!("{}", val.value)
+        } else {
+            "No value found".to_string()
+        },
         None => "No value found".to_string(),
     })
 }
@@ -137,6 +137,7 @@ async fn insert_key(
     query: web::Query<InsertOpts>,
     st_map: web::Data<Map>,
 ) -> impl Responder {
+    let timestamp = Instant::now();
     let mut lock = st_map.map.lock().unwrap();
     let ttl = query.ttl.unwrap_or(60);
     lock.insert(
@@ -144,6 +145,7 @@ async fn insert_key(
         MapValue {
             value: data.into_inner(),
             ttl,
+            timestamp,
         },
     );
     HttpResponse::Created().body("Inserted")
@@ -156,9 +158,9 @@ async fn patch_key(
     st_map: web::Data<Map>,
 ) -> impl Responder {
     let mut lock = st_map.map.lock().unwrap();
-    if data.starts_with("+") | data.starts_with("-") {
+    if data.starts_with('+') | data.starts_with('-') {
         let increment =
-            if data.starts_with("+") { 1 } else { -1 } * data[1..].parse::<i64>().unwrap();
+            if data.starts_with('+') { 1 } else { -1 } * data[1..].parse::<i64>().unwrap();
         match lock.get_mut(&key) {
             Some(v) => {
                 let found_key = match v.value.as_i64() {
@@ -180,6 +182,7 @@ async fn patch_key(
                     MapValue {
                         value: serde_json::json!(1),
                         ttl: TTL_DEFAULT,
+                        timestamp: Instant::now(),
                     },
                 );
                 HttpResponse::Ok().body(format!("{}", 1))
